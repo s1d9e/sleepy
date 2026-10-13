@@ -1,6 +1,15 @@
 <div align="center">
 
-# `SLEEPY`
+```
+▄▄▄▄▄  ▄▄                         
+ ██▀▀▀▀█▄ ██                        
+ ▀██▄  ▄▀ ██                        
+   ▀██▄▄  ██ ▄█▀█▄ ▄█▀█▄ ████▄ ██ ██
+ ▄   ▀██▄ ██ ██▄█▀ ██▄█▀ ██ ██ ██▄██
+ ▀██████▀▄██▄▀█▄▄▄▄▀█▄▄▄▄████▀▄▄▀██▀
+                         ██      ██ 
+                         ▀     ▀▀▀  
+```
 
 ### Covert DNS-over-HTTPS Tunnel
 
@@ -9,8 +18,9 @@
 ![Tests](https://img.shields.io/badge/tests-%E2%9C%93%20race%20green?style=flat-square&logo=github&logoColor=white)
 ![Status](https://img.shields.io/badge/status-alpha-orange?style=flat-square)
 
+**by [`s1d9e`](https://github.com/s1d9e)**
+
 ```
-   ── SLEEPY ──
    "It looks like DNS. It acts like DNS.
     But it carries your secrets."
 ```
@@ -19,8 +29,38 @@
 
 ---
 
+## ⚠️ Disclaimer
+
+> [!WARNING]
+> **For educational purposes and authorized security testing only.**
+>
+> **Sleepy** is a free and open-source project developed and maintained by
+> **[`s1d9e`](https://github.com/s1d9e)**.
+>
+> It is published **as is**, **without warranty of any kind**, and the author
+> is **not responsible, liable, or accountable** for any direct or indirect
+> damage, data loss, service disruption, legal action, or other consequence
+> resulting from the use, misuse, or inability to use this software.
+>
+> By downloading, building, running, or distributing Sleepy you **accept full
+> responsibility** for your actions and agree to use it **only**:
+>
+> - on systems and networks you own, or
+> - on systems and networks for which you hold **explicit written
+>   authorization** to test.
+>
+> Unauthorized access, interception of communications, or exfiltration of data
+> is **illegal** in most jurisdictions. It is **your sole responsibility** to
+> determine whether your use complies with applicable local laws and
+> regulations — **the author assumes none of that responsibility.**
+>
+> **If you do not agree to these terms, do not use this software.**
+
+---
+
 ## Table of contents
 
+- [⚠️ Disclaimer](#disclaimer)
 - [Overview](#overview)
 - [Threat model](#threat-model)
 - [How it works](#how-it-works)
@@ -55,9 +95,9 @@ egress-filtered or monitored network where arbitrary outbound TCP is blocked
 or scrutinized, but DNS — and specifically DoH toward a reputable resolver —
 is permitted and rarely decoded past the TLS layer.
 
-> **Authorized use only.** This tool is intended for authorized penetration
-> testing, red-team operations, and research. Do not use it on networks you
-> do not have permission to test.
+> **Authorized use only.** See the [Disclaimer](#disclaimer) — this tool is
+> for authorized penetration testing and research, on systems you have
+> permission to test.
 
 ## Threat model
 
