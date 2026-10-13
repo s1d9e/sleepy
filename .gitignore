@@ -1,0 +1,15 @@
+# Binaries.
+/bin/
+sleepy-server
+sleepy-client
+
+# Certs / secrets — never commit.
+*.pem
+*.key
+*.crt
+autocert-cache/
+
+# Go.
+*.test
+*.out
+coverage.*
