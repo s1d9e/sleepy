@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/s1d9e/sleepy/internal/crypto"
+	"github.com/s1d9e/sleepy/internal/pad"
+	"github.com/s1d9e/sleepy/internal/protocol"
 )
 
 func TestHandshakeAndEchoOverDoH(t *testing.T) {
@@ -400,5 +402,51 @@ func TestCadenceProfiles(t *testing.T) {
 	u := SchedulerConfig{Profile: "no-such", Jitter: 0.5}.withDefaults()
 	if u.Baseline != 1500*time.Millisecond || u.Burst != 100*time.Millisecond {
 		t.Fatalf("unknown profile did not fall back to defaults: %+v", u)
+	}
+}
+
+// TestPaddedFullSizeFrameFitsBudget pins the invariant that padding depends
+// on: a full-size uplink frame (the largest the stream will chunk to) must
+// always find a bucket big enough to hold it, and the padded record plus AEAD
+// overhead must still fit the DNS-name budget. Chunking and the bucket set
+// were derived independently, so a full-size frame landed above every bucket
+// (Pad failed with ErrTooLarge) while small payloads happened to fit — which
+// is why every unit test passed yet every bulk transfer with -padding
+// crashed the client.
+func TestPaddedFullSizeFrameFitsBudget(t *testing.T) {
+	cases := []struct{ session, domain string }{
+		{"pad1", "tunnel.example.com"},
+		{"h0i9321p", "localhost"}, // short domain: the crash case
+		{"sess01", "x.example.org"},
+	}
+	for _, tc := range cases {
+		// Wire the padding config exactly as NewClient does (without the
+		// handshake) so the test isolates the chunk-vs-bucket invariant.
+		budget := protocol.MaxNamePayload(len(tc.session), len(tc.domain))
+		c := &Client{
+			session: tc.session,
+			domain:  tc.domain,
+			padding: pad.UplinkBuckets(budget, crypto.SeqPrefixSize+crypto.Overhead),
+		}
+		if c.padding == nil {
+			t.Fatalf("%s/%s: padding unexpectedly disabled (budget %d too small)",
+				tc.session, tc.domain, budget)
+		}
+
+		// Reproduce the mux: a frame is header + a full-size payload.
+		frame := make([]byte, protocol.HeaderSize+c.MaxUplinkPayload())
+		padded, err := pad.Pad(frame, c.padding)
+		if err != nil {
+			t.Fatalf("%s/%s: full-size frame (%d B) failed to pad: %v",
+				tc.session, tc.domain, len(frame), err)
+		}
+
+		// The sealed record (seq prefix + padded + auth tag) must fit the
+		// query-name budget, else EncodeName overflows the 253-byte limit.
+		sealed := crypto.SeqPrefixSize + len(padded) + crypto.Overhead
+		if sealed > budget {
+			t.Fatalf("%s/%s: sealed padded frame %d B exceeds name budget %d B",
+				tc.session, tc.domain, sealed, budget)
+		}
 	}
 }

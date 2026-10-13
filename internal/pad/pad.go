@@ -138,7 +138,15 @@ func UplinkBuckets(budget, overhead int) []int {
 		if small > maxPlaintext {
 			small = maxPlaintext
 		}
-		out = []int{small}
+		out = append(out, small)
+	}
+	// The top bucket MUST be the budget ceiling itself. The chunker sizes
+	// uplink frames to fill the budget, so a full-size frame pads to exactly
+	// maxPlaintext; without this bucket, the sparse default set may top out
+	// well below the ceiling and Pad fails outright on large frames (the
+	// frame is valid, but no bucket is big enough to hold it).
+	if out[len(out)-1] < maxPlaintext {
+		out = append(out, maxPlaintext)
 	}
 	return out
 }

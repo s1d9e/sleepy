@@ -235,6 +235,84 @@ func TestEndToEndLargePayload(t *testing.T) {
 	}
 }
 
+// TestEndToEndLargePayloadWithPadding is the regression for a crash that
+// every small-payload test missed: with padding enabled, a full-size uplink
+// frame found no bucket large enough and Pad returned ErrTooLarge, killing
+// the client mid-transfer ("doh: pad uplink: payload exceeds every bucket").
+// Only a bulk transfer — one that fills frames to the chunk limit — reaches
+// that size, so this test must push enough data to chunk repeatedly.
+func TestEndToEndLargePayloadWithPadding(t *testing.T) {
+	echoAddr, closeEcho := startEcho(t)
+	defer closeEcho()
+
+	domain := "tunnel.example.com"
+	psk := crypto.DerivePSK("e2e-large-pad")
+
+	ds, err := doh.NewServer(doh.ServerConfig{Domain: domain, PSK: psk, Padding: true})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewTLSServer(ds)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = NewServer(ctx, ds)
+
+	dc, err := doh.NewClient(ctx, doh.ClientConfig{
+		Domain:     domain,
+		Session:    "e2ebigp",
+		PSK:        psk,
+		Endpoint:   ts.URL + doh.Path,
+		HTTPClient: ts.Client(),
+		Scheduler:  doh.SchedulerConfig{Baseline: 2 * time.Millisecond, Burst: time.Millisecond, Jitter: 0.1},
+		Padding:    true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	// Padding must shrink the chunk limit (it reserves the pad length
+	// prefix), but never below a usable frame.
+	uplinkMax := dc.MaxUplinkPayload()
+	if uplinkMax <= 0 || uplinkMax >= 8192 {
+		t.Fatalf("unexpected padded uplink max %d", uplinkMax)
+	}
+
+	tc := NewClient(ctx, dc)
+	go func() { _ = tc.Run(ctx) }()
+
+	echoHost, echoPortStr, _ := net.SplitHostPort(echoAddr)
+	var echoPort uint16
+	for _, ch := range echoPortStr {
+		echoPort = echoPort*10 + uint16(ch-'0')
+	}
+
+	conn, err := tc.Dial(echoHost, echoPort)
+	if err != nil {
+		t.Fatalf("tunnel Dial: %v", err)
+	}
+	defer conn.Close()
+
+	// 4 KiB → dozens of full-size uplink frames, each padded to a bucket.
+	msg := make([]byte, 4096)
+	for i := range msg {
+		msg[i] = byte(i % 251)
+	}
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read echo: %v (client likely died on pad uplink)", err)
+	}
+	for i := range buf {
+		if buf[i] != msg[i] {
+			t.Fatalf("mismatch at byte %d: got %d want %d", i, buf[i], msg[i])
+		}
+	}
+}
+
 func TestEndToEndThroughSOCKS5(t *testing.T) {
 	echoAddr, closeEcho := startEcho(t)
 	defer closeEcho()

@@ -181,13 +181,43 @@ func (c *Client) Session() *crypto.Session { return c.currentSession() }
 // uplink query name, given this client's session label and tunnel domain.
 // Producers of uplink frames must chunk to this size; anything larger would
 // encode to a DNS name over the 253-byte limit and be dropped.
+//
+// When padding is enabled the budget shrinks by two more bytes: Pad()
+// prepends a 2-byte length prefix and rounds the frame up to a bucket, so
+// the largest frame must still land inside the largest bucket. Chunking to
+// the unpadded maximum instead produced frames no bucket could hold, making
+// Pad fail with ErrTooLarge on any full-size frame — i.e. on every bulk
+// transfer, while small test payloads happened to fit a smaller bucket.
 func (c *Client) MaxUplinkPayload() int {
-	return protocol.MaxUplinkFramePayload(
+	max := protocol.MaxUplinkFramePayload(
 		len(c.session),
 		len(c.domain),
 		crypto.SeqPrefixSize,
 		crypto.Overhead,
 	)
+	if c.padding != nil {
+		if top := largestBucket(c.padding); top >= 0 {
+			if capped := top - protocol.HeaderSize - pad.Overhead; capped < max {
+				max = capped
+			}
+		}
+	}
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// largestBucket returns the biggest bucket in a set (the sets built here are
+// ascending, but this does not rely on that), or -1 for an empty set.
+func largestBucket(buckets []int) int {
+	top := -1
+	for _, b := range buckets {
+		if b > top {
+			top = b
+		}
+	}
+	return top
 }
 
 // Outbound implements protocol.Carrier: yields frames to transmit.
