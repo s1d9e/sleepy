@@ -9,8 +9,9 @@
  ▀██████▀▄██▄▀█▄▄▄▄▀█▄▄▄▄████▀▄▄▀██▀
                          ██      ██ 
                          ▀     ▀▀▀  
+   "It looks like DNS. It acts like DNS.
+    But it carries your secrets."
 ```
-
 ### Covert DNS-over-HTTPS Tunnel
 
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white)
@@ -19,12 +20,6 @@
 ![Status](https://img.shields.io/badge/status-alpha-orange?style=flat-square)
 
 **by [`s1d9e`](https://github.com/s1d9e)**
-
-```
-   "It looks like DNS. It acts like DNS.
-    But it carries your secrets."
-```
-
 </div>
 
 ---
