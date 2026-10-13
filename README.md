@@ -111,31 +111,45 @@ ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:1080 %h %p' user@target
 
 Throughput is gated by the **scheduler cadence** (one DoH exchange per frame)
 and by the **DNS name budget** (~109 B of uplink payload per query), not by
-the network. Measured on loopback with the production scheduler
-(baseline 1500 ms, burst 100 ms, 12 steps, 0.4 jitter):
+the network. Measured on loopback, 16 KiB transfers, one benchmark run per
+cadence profile:
 
-| Metric | Measured |
-|---|---|
-| Uplink throughput | ~5.3 Kbps (~0.65 KB/s) |
-| Downlink throughput | ~19.5 Kbps (~2.4 KB/s) |
-| Round-trip latency | ~4.6 ms (fast scheduler) |
-| Uplink payload / frame | ~109 B |
+| Profile | Uplink | Downlink | Cadence |
+|---|---|---|---|
+| `stealth` | ~2.6 Kbps | ~9.2 Kbps | 3000 ms idle, 250 ms burst, 0.5 jitter |
+| `balanced` (default) | ~5.3 Kbps | ~21.8 Kbps | 1500 ms idle, 100 ms burst, 0.4 jitter |
+| `fast` | ~12.7 Kbps | ~88.4 Kbps | 500 ms idle, 15 ms burst, 0.15 jitter |
 
-The downlink is ~3.7× faster than uplink because each response carries a full
-TXT record (~1024 B) while a query NAME only fits ~109 B. Both directions are
-**burst-gated**: the client re-arms the burst from its uplink backlog and
-self-clocks on non-empty downlink responses, so sustained transfers hold the
-burst rate instead of collapsing to the baseline keepalive.
+Select with `-cadence stealth|balanced|fast` on the client. The downlink is
+~7× faster than uplink at the same cadence because each response carries a
+full TXT record (~1024 B) while a query NAME only fits ~109 B — so `fast`
+downlink approaches the ~96 Kbps design target while uplink cannot (the name
+budget is a hard ceiling).
+
+**16 KiB numbers are tail-dominated.** Each burst ends with a decay ramp back
+to the idle baseline, and for a small transfer that ramp is most of the
+elapsed time. A *sustained* transfer (larger than the 256-frame uplink queue,
+~28 KiB) keeps the queue saturated so the tail is amortized: the same `fast`
+profile measures **~37.7 Kbps uplink** at 128 KiB vs ~12.7 Kbps at 16 KiB.
+
+Both directions are **burst-gated**: the client re-arms the burst from its
+uplink backlog and self-clocks on non-empty downlink responses, so sustained
+transfers hold the burst rate instead of collapsing to the baseline
+keepalive. A full uplink queue **backpressures** the writer (the TCP read
+from the SOCKS client throttles) rather than dropping frames.
 
 The tunnel is **RTT-bound** (one frame per request/response): real-world
-throughput scales inversely with network latency. Raise the burst rate (lower
-`Burst` in `SchedulerConfig`) for more throughput at the cost of a less
-human-like cadence.
+throughput scales inversely with network latency. `fast` trades a
+machine-regular cadence — easier for an NDR to flag — for ~10× throughput.
 
 Reproduce with the built-in benchmark:
 
 ```bash
+# default 16 KiB transfers, all profiles
 go test ./internal/tunnel/ -bench 'Throughput|Latency' -benchtime 1x -v
+
+# sustained (steady-state) throughput
+SLEEPY_BENCH_BYTES=131072 go test ./internal/tunnel/ -bench 'UplinkThroughput/fast' -benchtime 1x -v
 ```
 
 ## Security notes

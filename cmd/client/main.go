@@ -30,12 +30,18 @@ func main() {
 		session  = flag.String("session", "", "session label (default: random)")
 		insecure = flag.Bool("insecure", false, "skip TLS certificate verification (lab only)")
 		padding  = flag.Bool("padding", false, "length-hide frames (must match the server's -padding)")
+		cadence  = flag.String("cadence", doh.ProfileBalanced, "pacing profile: stealth|balanced|fast (throughput vs fingerprint)")
 	)
 	flag.Parse()
 
 	if *server == "" || *secret == "" {
 		fmt.Fprintln(os.Stderr, "usage: sleepy-client -server tunnel.example.com -secret-key <passphrase> [flags]")
 		flag.PrintDefaults()
+		os.Exit(2)
+	}
+
+	if !isValidProfile(*cadence) {
+		fmt.Fprintf(os.Stderr, "invalid -cadence %q (want one of: %s)\n", *cadence, strings.Join(doh.Profiles(), "|"))
 		os.Exit(2)
 	}
 
@@ -62,11 +68,12 @@ func main() {
 		Endpoint:   *endpoint,
 		HTTPClient: hc,
 		Padding:    *padding,
+		Scheduler:  doh.SchedulerConfig{Profile: *cadence},
 	})
 	if err != nil {
 		log.Fatalf("handshake failed: %v", err)
 	}
-	log.Printf("handshake ok (session=%s)", *session)
+	log.Printf("handshake ok (session=%s, cadence=%s)", *session, *cadence)
 
 	tc := tunnel.NewClient(ctx, dc)
 
@@ -95,6 +102,16 @@ func randomSession() string {
 		s.WriteByte(alphabet[int(c)%len(alphabet)])
 	}
 	return s.String()
+}
+
+// isValidProfile reports whether name is a known cadence profile.
+func isValidProfile(name string) bool {
+	for _, p := range doh.Profiles() {
+		if name == p {
+			return true
+		}
+	}
+	return false
 }
 
 // tlsInsecureConfig returns a TLS config that skips verification — lab use

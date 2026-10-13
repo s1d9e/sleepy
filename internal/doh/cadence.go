@@ -40,6 +40,10 @@ type Scheduler struct {
 
 // SchedulerConfig tunes the pacing profile.
 type SchedulerConfig struct {
+	// Profile applies a named preset (see Profile constants) as a baseline;
+	// any field set explicitly below overrides the preset's value. Empty
+	// means "use the built-in defaults" (equivalent to ProfileBalanced).
+	Profile string
 	// Baseline is the idle keepalive interval. Default 1500ms.
 	Baseline time.Duration
 	// Burst is the minimum interval when data is queued. Default 100ms.
@@ -54,7 +58,66 @@ type SchedulerConfig struct {
 	Seed int64
 }
 
+// Cadence profiles. These trade throughput against how human the traffic
+// looks. Throughput scales inversely with Burst (one frame per exchange):
+// roughly 109 B of uplink payload per Burst interval.
+const (
+	// ProfileStealth minimizes fingerprint: long idle keepalive, slow
+	// burst, heavy jitter. Lowest throughput, hardest to distinguish from
+	// a human.
+	ProfileStealth = "stealth"
+	// ProfileBalanced is the default: human-like bursts with moderate
+	// throughput.
+	ProfileBalanced = "balanced"
+	// ProfileFast favors throughput: aggressive burst, light jitter. Easier
+	// for an NDR to flag as machine-like, but moves data ~10x faster.
+	ProfileFast = "fast"
+)
+
+// profilePresets maps a profile name to its concrete settings. Zero-valued
+// fields fall through to the built-in defaults in withDefaults.
+var profilePresets = map[string]SchedulerConfig{
+	ProfileStealth: {
+		Baseline:   3000 * time.Millisecond,
+		Burst:      250 * time.Millisecond,
+		BurstSteps: 8,
+		Jitter:     0.5,
+	},
+	ProfileBalanced: {
+		Baseline:   1500 * time.Millisecond,
+		Burst:      100 * time.Millisecond,
+		BurstSteps: 12,
+		Jitter:     0.4,
+	},
+	ProfileFast: {
+		Baseline:   500 * time.Millisecond,
+		Burst:      15 * time.Millisecond,
+		BurstSteps: 32,
+		Jitter:     0.15,
+	},
+}
+
+// Profiles returns the known profile names, for CLI validation and help.
+func Profiles() []string {
+	return []string{ProfileStealth, ProfileBalanced, ProfileFast}
+}
+
 func (c SchedulerConfig) withDefaults() SchedulerConfig {
+	// Apply the named preset first, then let explicit fields win.
+	if preset, ok := profilePresets[c.Profile]; ok {
+		if c.Baseline <= 0 {
+			c.Baseline = preset.Baseline
+		}
+		if c.Burst <= 0 {
+			c.Burst = preset.Burst
+		}
+		if c.BurstSteps <= 0 {
+			c.BurstSteps = preset.BurstSteps
+		}
+		if c.Jitter <= 0 {
+			c.Jitter = preset.Jitter
+		}
+	}
 	if c.Baseline <= 0 {
 		c.Baseline = 1500 * time.Millisecond
 	}

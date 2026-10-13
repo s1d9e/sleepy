@@ -358,3 +358,47 @@ func TestSchedulerUsesConfiguredSteps(t *testing.T) {
 		t.Fatalf("burst held %d ticks, want >= 5; BurstSteps=%d is being ignored", held, steps)
 	}
 }
+
+// TestCadenceProfiles verifies the named profiles resolve to sensible,
+// correctly-ordered settings: stealth must be the slowest (most human-like),
+// fast the most aggressive. It also pins that an explicit field overrides the
+// preset, and that an unknown profile falls back to the built-in defaults.
+func TestCadenceProfiles(t *testing.T) {
+	resolved := func(profile string) SchedulerConfig {
+		// No explicit fields: let every value come from the preset so we can
+		// compare the presets against each other.
+		return SchedulerConfig{Profile: profile}.withDefaults()
+	}
+
+	stealth := resolved(ProfileStealth)
+	balanced := resolved(ProfileBalanced)
+	fast := resolved(ProfileFast)
+
+	// Burst interval must decrease across profiles (more aggressive = faster).
+	if !(stealth.Burst > balanced.Burst && balanced.Burst > fast.Burst) {
+		t.Fatalf("burst order wrong: stealth=%v balanced=%v fast=%v",
+			stealth.Burst, balanced.Burst, fast.Burst)
+	}
+	// Baseline (idle keepalive) must also decrease across profiles.
+	if !(stealth.Baseline > balanced.Baseline && balanced.Baseline > fast.Baseline) {
+		t.Fatalf("baseline order wrong: stealth=%v balanced=%v fast=%v",
+			stealth.Baseline, balanced.Baseline, fast.Baseline)
+	}
+	// Jitter must decrease (fast is least human-like, stealth most).
+	if !(stealth.Jitter > fast.Jitter) {
+		t.Fatalf("jitter order wrong: stealth=%v fast=%v", stealth.Jitter, fast.Jitter)
+	}
+
+	// An explicit field must override the preset.
+	o := SchedulerConfig{Profile: ProfileStealth, Burst: 7 * time.Millisecond}.withDefaults()
+	if o.Burst != 7*time.Millisecond {
+		t.Fatalf("explicit Burst ignored: got %v want 7ms", o.Burst)
+	}
+
+	// An unknown profile must fall back to the built-in defaults
+	// (baseline 1500ms, burst 100ms).
+	u := SchedulerConfig{Profile: "no-such", Jitter: 0.5}.withDefaults()
+	if u.Baseline != 1500*time.Millisecond || u.Burst != 100*time.Millisecond {
+		t.Fatalf("unknown profile did not fall back to defaults: %+v", u)
+	}
+}

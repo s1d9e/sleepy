@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -200,69 +202,93 @@ func readFullTimeout(rw io.ReadWriteCloser, buf []byte, timeout time.Duration) e
 	}
 }
 
+// benchPayload returns the transfer size for a benchmark run. The default
+// (16 KiB) is tail-dominated: the burst decay ramp makes up most of the
+// elapsed time. Override with SLEEPY_BENCH_BYTES to measure sustained
+// (steady-state) throughput, where the uplink queue stays saturated and the
+// decay tail is amortized to a negligible fraction of the run.
+func benchPayload() int {
+	const defaultBytes = 16 * 1024
+	if v := os.Getenv("SLEEPY_BENCH_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultBytes
+}
+
 // BenchmarkUplinkThroughput pushes payload bytes through a sink target and
-// reports effective KB/s and Kbps at the production scheduler cadence.
+// reports effective KB/s and Kbps for each cadence profile, so the
+// throughput-vs-fingerprint trade-off is measurable rather than guessed.
 func BenchmarkUplinkThroughput(b *testing.B) {
-	const payload = 16 * 1024
-	sched := doh.SchedulerConfig{} // production defaults
+	payload := benchPayload()
 
-	addr, received, closeFn := startSink(b)
-	defer closeFn()
+	for _, profile := range doh.Profiles() {
+		b.Run(profile, func(b *testing.B) {
+			sched := doh.SchedulerConfig{Profile: profile}
+			addr, received, closeFn := startSink(b)
+			defer closeFn()
 
-	for i := 0; i < b.N; i++ {
-		st := newBenchStack(b, addr, "up"+string(rune('a'+i)), sched)
-		before := received.get()
-		buf := fill(payload)
+			for i := 0; i < b.N; i++ {
+				st := newBenchStack(b, addr, "up"+profile+string(rune('a'+i)), sched)
+				before := received.get()
+				buf := fill(payload)
 
-		start := time.Now()
-		written := 0
-		for written < payload {
-			m := 64 * 1024
-			if payload-written < m {
-				m = payload - written
-			}
-			if _, err := st.conn.Write(buf[written : written+m]); err != nil {
+				start := time.Now()
+				written := 0
+				for written < payload {
+					m := 64 * 1024
+					if payload-written < m {
+						m = payload - written
+					}
+					if _, err := st.conn.Write(buf[written : written+m]); err != nil {
+						st.cancel()
+						b.Fatalf("write: %v", err)
+					}
+					written += m
+				}
+				// Throughput is measured until the sink has every byte.
+				ok := waitUntil(180*time.Second, func() bool {
+					return received.get()-before >= int64(payload)
+				})
+				elapsed := time.Since(start)
 				st.cancel()
-				b.Fatalf("write: %v", err)
+				if !ok {
+					b.Fatalf("uplink timeout: got %d of %d bytes", received.get()-before, payload)
+				}
+				b.ReportMetric(float64(payload)/elapsed.Seconds()/1024, "KB/s-up")
+				b.ReportMetric(float64(payload)*8/elapsed.Seconds()/1000, "Kbps-up")
 			}
-			written += m
-		}
-		// Throughput is measured until the sink has received all bytes.
-		ok := waitUntil(120*time.Second, func() bool {
-			return received.get()-before >= payload
 		})
-		elapsed := time.Since(start)
-		st.cancel()
-		if !ok {
-			b.Fatalf("uplink timeout: got %d of %d bytes", received.get()-before, payload)
-		}
-		b.ReportMetric(float64(payload)/elapsed.Seconds()/1024, "KB/s-up")
-		b.ReportMetric(float64(payload)*8/elapsed.Seconds()/1000, "Kbps-up")
 	}
 }
 
 // BenchmarkDownlinkThroughput pulls payload bytes from a source target and
-// reports effective KB/s and Kbps at the production scheduler cadence.
+// reports effective KB/s and Kbps for each cadence profile.
 func BenchmarkDownlinkThroughput(b *testing.B) {
-	const payload = 16 * 1024
-	sched := doh.SchedulerConfig{}
+	payload := benchPayload()
 
-	addr, closeFn := startSource(b, payload)
-	defer closeFn()
+	for _, profile := range doh.Profiles() {
+		b.Run(profile, func(b *testing.B) {
+			sched := doh.SchedulerConfig{Profile: profile}
+			addr, closeFn := startSource(b, payload)
+			defer closeFn()
 
-	for i := 0; i < b.N; i++ {
-		st := newBenchStack(b, addr, "dn"+string(rune('a'+i)), sched)
+			for i := 0; i < b.N; i++ {
+				st := newBenchStack(b, addr, "dn"+profile+string(rune('a'+i)), sched)
 
-		readBuf := make([]byte, payload)
-		start := time.Now()
-		rerr := readFullTimeout(st.conn, readBuf, 120*time.Second)
-		elapsed := time.Since(start)
-		st.cancel()
-		if rerr != nil {
-			b.Fatalf("downlink read: %v", rerr)
-		}
-		b.ReportMetric(float64(payload)/elapsed.Seconds()/1024, "KB/s-down")
-		b.ReportMetric(float64(payload)*8/elapsed.Seconds()/1000, "Kbps-down")
+				readBuf := make([]byte, payload)
+				start := time.Now()
+				rerr := readFullTimeout(st.conn, readBuf, 180*time.Second)
+				elapsed := time.Since(start)
+				st.cancel()
+				if rerr != nil {
+					b.Fatalf("downlink read: %v", rerr)
+				}
+				b.ReportMetric(float64(payload)/elapsed.Seconds()/1024, "KB/s-down")
+				b.ReportMetric(float64(payload)*8/elapsed.Seconds()/1000, "Kbps-down")
+			}
+		})
 	}
 }
 

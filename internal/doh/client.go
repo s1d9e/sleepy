@@ -35,6 +35,10 @@ type Client struct {
 	// padding. Downlink padding is decided by the server.
 	padding []int
 
+	// ctx is the construction context, retained so Send can block on a
+	// full uplink queue (backpressure) while still unblocking promptly if
+	// the tunnel is torn down.
+	ctx    context.Context
 	uplink chan []byte // frames queued for transmission
 
 	mu sync.Mutex
@@ -119,6 +123,7 @@ func NewClient(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		http:     hc,
 		sched:    NewScheduler(cfg.Scheduler),
 		rc:       cfg.Reconnect.withDefaults(),
+		ctx:      ctx,
 		uplink:   make(chan []byte, 256),
 	}
 
@@ -189,14 +194,21 @@ func (c *Client) MaxUplinkPayload() int {
 func (c *Client) Outbound() <-chan []byte { return c.uplink }
 
 // Send implements protocol.Carrier: queues one encoded frame.
+//
+// When the uplink queue is full, Send BLOCKS until there is room rather than
+// dropping the frame: this backpressures the caller (the mux writer), which
+// in turn throttles the TCP read from the SOCKS client, so a bulk transfer
+// slows down instead of failing with a queue-full error. The block is
+// interruptible by the client's context so a torn-down tunnel cannot hang a
+// writer forever.
 func (c *Client) Send(frame []byte) error {
 	// Arm a burst: one exchange per queued frame.
 	c.sched.Notify(1)
 	select {
 	case c.uplink <- frame:
 		return nil
-	default:
-		return fmt.Errorf("doh: uplink queue full")
+	case <-c.ctx.Done():
+		return fmt.Errorf("doh: client closed: %w", c.ctx.Err())
 	}
 }
 
