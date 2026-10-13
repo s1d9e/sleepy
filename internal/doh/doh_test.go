@@ -263,3 +263,98 @@ func TestSchedulerBurstThenBaseline(t *testing.T) {
 		t.Fatalf("burst interval too long: %v", d)
 	}
 }
+
+// TestSchedulerBurstHoldsUnderBacklog is a regression test for the decay
+// math. The old code computed frac = remaining/12 with NO upper clamp and
+// base = burst + frac*(baseline-burst), so a backlog > 12 pushed frac > 1 and
+// the interval ABOVE the baseline: the more data queued, the slower it went.
+// A deep backlog must instead HOLD the fast burst rate, and no interval may
+// ever explode past the baseline.
+//
+// The scheduler applies jitter (Jitter:0 falls back to the 0.4 default), so
+// these assertions use invariant thresholds rather than exact values. With
+// jitter 0.4: burst-phase intervals land in [60ms,140ms] and baseline-phase
+// in [900ms,2100ms]; the midpoint baseline/2=750ms cleanly separates them.
+func TestSchedulerBurstHoldsUnderBacklog(t *testing.T) {
+	const (
+		baseline = 1500 * time.Millisecond
+		burst    = 100 * time.Millisecond
+		steps    = 12
+	)
+	s := NewScheduler(SchedulerConfig{
+		Baseline:   baseline,
+		Burst:      burst,
+		BurstSteps: steps,
+		Seed:       1, // reproducible jitter stream
+	})
+	fast := baseline / 2 // separates burst-phase from baseline-phase
+
+	// Simulate a deep uplink backlog: 60 frames queued.
+	s.Notify(60)
+
+	// The first exchange of a full burst must be burst-like (fast), not the
+	// baseline. The old unbounded-decay bug blew this up to ~7s.
+	if first := s.nextInterval(); first >= fast {
+		t.Fatalf("first burst interval = %v, want < %v (burst-like)", first, fast)
+	}
+
+	// Drain the whole backlog. The burst rate must be held for many ticks
+	// (not collapsed after a single frame), and no interval may explode past
+	// a sane multiple of the baseline.
+	var maxInterval time.Duration
+	held := 0
+	for i := 0; i < 60; i++ {
+		d := s.nextInterval()
+		if d > maxInterval {
+			maxInterval = d
+		}
+		if d < fast {
+			held++
+		}
+	}
+	// With steps=12 the burst floor is held until remaining decays to steps;
+	// over a 60-frame backlog that's ~48 fast ticks (the last ~12 ramp up).
+	if held < 40 {
+		t.Fatalf("burst rate held for only %d/60 ticks; a deep backlog must sustain the burst", held)
+	}
+	// Healthy decay tops out near baseline*1.4 (jitter); the old bug reached
+	// ~17s. A 2x ceiling catches any unbounded regression.
+	if maxInterval > 2*baseline {
+		t.Fatalf("interval %v exceeded 2*baseline %v under backlog (unbounded decay)", maxInterval, 2*baseline)
+	}
+}
+
+// TestSchedulerUsesConfiguredSteps pins that BurstSteps (not a hardcoded
+// constant) drives the decay ramp. With steps=3 the ramp must complete over
+// ~3 ticks; if the scheduler ignored the config and used 12, the burst floor
+// would never be reached for a small backlog.
+func TestSchedulerUsesConfiguredSteps(t *testing.T) {
+	const (
+		baseline = 1500 * time.Millisecond
+		burst    = 100 * time.Millisecond
+		steps    = 3 // deliberately small and != the old hardcoded 12
+	)
+	s := NewScheduler(SchedulerConfig{
+		Baseline:   baseline,
+		Burst:      burst,
+		BurstSteps: steps,
+		Seed:       1,
+	})
+	fast := baseline / 2
+
+	s.Notify(10) // backlog of 10
+	s.nextInterval()
+	held := 0
+	for i := 0; i < 9; i++ {
+		if d := s.nextInterval(); d < fast {
+			held++
+		}
+	}
+	// Burst is held while remaining decays from 9 down to steps=3, then the
+	// ramp lifts the interval. That's ~7 fast ticks. If steps were hardcoded
+	// to 12, frac would never approach 1 for remaining<=9 and no tick would
+	// land in the burst band.
+	if held < 5 {
+		t.Fatalf("burst held %d ticks, want >= 5; BurstSteps=%d is being ignored", held, steps)
+	}
+}

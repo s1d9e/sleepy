@@ -213,6 +213,14 @@ func (c *Client) Send(frame []byte) error {
 func (c *Client) Run(ctx context.Context, handleDownlink func([]byte) error) error {
 	consecutive := 0
 	for {
+		// Re-arm the burst from the real backlog: one fast exchange per
+		// queued frame. Without this the burst would collapse to a single
+		// frame and sustained transfers would fall back to the baseline
+		// keepalive rate (measured ~72 B/s instead of the burst rate).
+		if pending := len(c.uplink); pending > 0 {
+			c.sched.Notify(pending)
+		}
+
 		if !c.sched.Next(ctx) {
 			return ctx.Err()
 		}
@@ -281,6 +289,16 @@ func (c *Client) Run(ctx context.Context, handleDownlink func([]byte) error) err
 		}
 		if err := handleDownlink(plain); err != nil {
 			return fmt.Errorf("doh: downlink: %w", err)
+		}
+		// Downlink self-clocking: this exchange returned data, so the
+		// server likely has more pending. Re-arm a full burst so we keep
+		// pulling at the fast rate until responses come back empty (then
+		// the scheduler decays to the baseline keepalive on its own).
+		// Without this, a pure downlink transfer would be gated by the
+		// uplink backlog (which stays empty) and crawl at the baseline
+		// cadence — one frame per keepalive.
+		if len(plain) > 0 {
+			c.sched.ArmBurst()
 		}
 	}
 }

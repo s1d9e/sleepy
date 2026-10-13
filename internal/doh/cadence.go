@@ -24,16 +24,18 @@ import (
 type Scheduler struct {
 	baseline time.Duration // idle keepalive interval
 	burst    time.Duration // interval during a burst
+	steps    int           // burst steps before decay toward baseline
 
 	jitter float64 // +/- fraction applied to every interval
 
 	rng *rand.Rand
 	mu  sync.Mutex
 
-	// decay models the ramp-down: after a burst the scheduler spaces
-	// intervals geometrically from burst back to baseline over decay
-	// steps, rather than dropping instantly.
-	remaining int // burst steps left
+	// remaining is the number of fast (burst) exchanges still owed. It is
+	// re-armed from the real uplink backlog each tick, so a large backlog
+	// sustains the burst rate instead of collapsing to baseline after one
+	// frame.
+	remaining int
 }
 
 // SchedulerConfig tunes the pacing profile.
@@ -77,18 +79,30 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 	return &Scheduler{
 		baseline:  cfg.Baseline,
 		burst:     cfg.Burst,
+		steps:     cfg.BurstSteps,
 		jitter:    cfg.Jitter,
 		remaining: 0,
 		rng:       rand.New(rand.NewSource(cfg.Seed)),
 	}
 }
 
-// Notify tells the scheduler that data is pending, arming a burst.
+// Notify tells the scheduler that `steps` more exchanges are owed at the
+// fast burst rate. It takes the max with any steps already pending, so
+// callers can re-arm on every queued frame without over-counting.
 func (s *Scheduler) Notify(steps int) {
 	s.mu.Lock()
 	if steps > s.remaining {
 		s.remaining = steps
 	}
+	s.mu.Unlock()
+}
+
+// ArmBurst re-arms a full burst (steps owed at the fast rate). Used for
+// downlink self-clocking: when an exchange returned downlink data, more is
+// likely pending server-side, so we poll faster until responses go empty.
+func (s *Scheduler) ArmBurst() {
+	s.mu.Lock()
+	s.remaining = s.steps
 	s.mu.Unlock()
 }
 
@@ -106,19 +120,27 @@ func (s *Scheduler) Next(ctx context.Context) bool {
 	}
 }
 
+// nextInterval returns the delay until the next exchange, advancing the
+// decay state. While fast exchanges are owed (remaining > 0) the interval
+// starts at the burst rate and, as remaining drains toward zero, ramps
+// geometrically back up to the baseline keepalive. remaining is clamped so a
+// large backlog can never push the interval past the burst floor.
 func (s *Scheduler) nextInterval() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var base time.Duration
 	if s.remaining > 0 {
-		// Burst phase with geometric decay toward baseline.
 		s.remaining--
-		frac := float64(s.remaining) / float64(12)
-		if frac < 0 {
-			frac = 0
+		// frac in [0,1]: 1 while a full burst is owed (remaining >=
+		// steps), decaying toward 0 as remaining drains, so the interval
+		// ramps from burst up to baseline. A large backlog therefore holds
+		// the fast burst rate; only the tail of a burst eases back.
+		frac := float64(s.remaining) / float64(s.steps)
+		if frac > 1 {
+			frac = 1
 		}
-		base = time.Duration(float64(s.burst) + frac*float64(s.baseline-s.burst))
+		base = time.Duration(float64(s.burst) + (1-frac)*float64(s.baseline-s.burst))
 	} else {
 		base = s.baseline
 	}

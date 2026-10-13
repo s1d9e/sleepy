@@ -13,8 +13,9 @@ import (
 	"github.com/s1d9e/sleepy/internal/doh"
 )
 
-// startEcho starts a TCP echo server and returns its address.
-func startEcho(t *testing.T) (string, func()) {
+// startEcho starts a TCP echo server and returns its address. It accepts
+// testing.TB so both tests and benchmarks can use it.
+func startEcho(t testing.TB) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

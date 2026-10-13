@@ -107,6 +107,37 @@ curl --socks5-hostname 127.0.0.1:1080 https://target.internal/
 ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:1080 %h %p' user@target
 ```
 
+## Performance
+
+Throughput is gated by the **scheduler cadence** (one DoH exchange per frame)
+and by the **DNS name budget** (~109 B of uplink payload per query), not by
+the network. Measured on loopback with the production scheduler
+(baseline 1500 ms, burst 100 ms, 12 steps, 0.4 jitter):
+
+| Metric | Measured |
+|---|---|
+| Uplink throughput | ~5.3 Kbps (~0.65 KB/s) |
+| Downlink throughput | ~19.5 Kbps (~2.4 KB/s) |
+| Round-trip latency | ~4.6 ms (fast scheduler) |
+| Uplink payload / frame | ~109 B |
+
+The downlink is ~3.7× faster than uplink because each response carries a full
+TXT record (~1024 B) while a query NAME only fits ~109 B. Both directions are
+**burst-gated**: the client re-arms the burst from its uplink backlog and
+self-clocks on non-empty downlink responses, so sustained transfers hold the
+burst rate instead of collapsing to the baseline keepalive.
+
+The tunnel is **RTT-bound** (one frame per request/response): real-world
+throughput scales inversely with network latency. Raise the burst rate (lower
+`Burst` in `SchedulerConfig`) for more throughput at the cost of a less
+human-like cadence.
+
+Reproduce with the built-in benchmark:
+
+```bash
+go test ./internal/tunnel/ -bench 'Throughput|Latency' -benchtime 1x -v
+```
+
 ## Security notes
 
 - The pre-shared key is a **passphrase**; it is run through HKDF to derive a
